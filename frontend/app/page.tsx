@@ -13,7 +13,6 @@ export default function AgentDashboard() {
     const [result, setResult] = useState<string | null>(null);
     const [loading, setLoading] = useState(false);
 
-    // 1. Submit mission to Node.js backend queue (Port 3001)
     const handleRunAgent = async (e: React.FormEvent) => {
         e.preventDefault();
         setLoading(true);
@@ -44,7 +43,6 @@ export default function AgentDashboard() {
         }
     };
 
-    // 2. Poll the job status endpoint until it completes or fails
     const pollJobStatus = (id: string) => {
         const interval = setInterval(async () => {
             try {
@@ -172,7 +170,6 @@ export default function AgentDashboard() {
                                             </ul>
                                         );
                                     } catch {
-                                        // Fallback if the AI just returns plain text
                                         return <span>{result}</span>;
                                     }
                                 })()}

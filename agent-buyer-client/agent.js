@@ -45,6 +45,10 @@ const functions = {
             body: JSON.stringify({ agentId, skuList, agentBudgetMandate: mandateLimit }),
         });
         return await res.json();
+    },
+    request_mandate_override: async ({ excessAmount, reason }) => {
+        console.log(`\n>>> [HITL ALERT] AI requested override for ₹${excessAmount}. Reason: ${reason}`);
+        return `OVERRIDE_PENDING. Instruct user to approve in dashboard. Format final JSON with status: 'APPROVAL_REQUIRED' and reasoning_log: 'HITL Override requested for ₹${excessAmount}: ${reason}'`;
     }
 };
 
