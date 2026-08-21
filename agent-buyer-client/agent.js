@@ -1,20 +1,33 @@
+import express from 'express';
+import cors from 'cors';
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import fetch from "node-fetch";
 import dotenv from "dotenv";
+import { Queue, Worker } from 'bullmq';
+import Redis from 'ioredis';
 
 dotenv.config();
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+// Set up Redis connection
+const redisConnection = new Redis({ host: '127.0.0.1', port: 6379, maxRetriesPerRequest: null });
+
+// Created the Queue
+const agentQueue = new Queue('agent-missions', { connection: redisConnection });
 
 const BASE_URL = "http://localhost:8080/api/agent";
 const genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY);
 
-// 1. Map our API calls to JavaScript functions
+// Tools and Functions
 const functions = {
     fetch_catalog: async () => {
         console.log("\n>>> [AI Agent] Fetching store catalog...");
         const res = await fetch(`${BASE_URL}/catalog`);
         return await res.json();
     },
-
     evaluate_upsell: async ({ sku, mandateLimit }) => {
         console.log(`\n>>> [AI Agent] Evaluating upsell for SKU: ${sku} with budget: ₹${mandateLimit}...`);
         const res = await fetch(`${BASE_URL}/cart/upsell`, {
@@ -24,7 +37,6 @@ const functions = {
         });
         return await res.json();
     },
-
     execute_checkout: async ({ agentId, skuList, mandateLimit }) => {
         console.log(`\n>>> [AI Agent] Requesting gated checkout for items: ${skuList.join(", ")}...`);
         const res = await fetch(`${BASE_URL}/checkout`, {
@@ -36,21 +48,17 @@ const functions = {
     }
 };
 
-// 2. Define the tool schemas for Gemini
 const tools = [{
     functionDeclarations: [
-        {
-            name: "fetch_catalog",
-            description: "Fetches available products and prices from the store.",
-        },
+        { name: "fetch_catalog", description: "Fetches available products and prices." },
         {
             name: "evaluate_upsell",
             description: "Sends product SKU and spending mandate to get bundle options.",
             parameters: {
                 type: "OBJECT",
                 properties: {
-                    sku: { type: "STRING", description: "Product SKU, e.g., LP-101" },
-                    mandateLimit: { type: "NUMBER", description: "Maximum budget limit" }
+                    sku: { type: "STRING" },
+                    mandateLimit: { type: "NUMBER" }
                 },
                 required: ["sku", "mandateLimit"]
             }
@@ -61,9 +69,9 @@ const tools = [{
             parameters: {
                 type: "OBJECT",
                 properties: {
-                    agentId: { type: "STRING", description: "Agent identifier" },
-                    skuList: { type: "ARRAY", items: { type: "STRING" }, description: "List of SKUs to buy" },
-                    mandateLimit: { type: "NUMBER", description: "Spending mandate cap" }
+                    agentId: { type: "STRING" },
+                    skuList: { type: "ARRAY", items: { type: "STRING" } },
+                    mandateLimit: { type: "NUMBER" }
                 },
                 required: ["agentId", "skuList", "mandateLimit"]
             }
@@ -71,55 +79,84 @@ const tools = [{
     ]
 }];
 
-async function runAgentDemo() {
-    console.log(">>> [AI Buyer] Starting autonomous shopping mission...");
+// The worker runs in the background
+const worker = new Worker('agent-missions', async (job) => {
+    const { userPrompt, mandateLimit, agentId } = job.data;
 
-    const model = genAI.getGenerativeModel({
-        model: "gemini-3.6-flash",
-        tools: tools
-    });
+    console.log(`\n======================================================`);
+    console.log(`>>> [Worker] Processing Job ${job.id}: Agent ${agentId} with budget ₹${mandateLimit}`);
+    console.log(`======================================================`);
 
-    const prompt = "You are an autonomous corporate buyer with a strict spending mandate limit of ₹50,000. Browse the store catalog, find the laptop, check the upsell options to maximize value within your budget, and execute the gated checkout process. Use agentId: 'AGENT-ALPHA-01'.";
+    try {
+        // Here, I used google-gemini-API
+        const model = genAI.getGenerativeModel({
+            model: "gemini-flash-latest",
+            tools: tools
+        });
+        const systemPrompt = `You are an autonomous corporate buyer with a strict spending mandate limit of ₹${mandateLimit}. Use agentId: '${agentId}'. User Request: "${userPrompt}". Browse the catalog, find the requested items, evaluate upsells, and execute the gated checkout.`;
 
-    // 1. Manually create the conversation history array
-    let history = [
-        {
-            role: "user",
-            parts: [{ text: prompt }]
+        let history = [{ role: "user", parts: [{ text: systemPrompt }] }];
+
+        console.log(`>>> [Worker] Sending request to Google Gemini API...`);
+        let result = await model.generateContent({ contents: history });
+        let call = result.response.functionCalls();
+
+        while (call && call.length > 0) {
+            const currentCall = call[0];
+            const apiResponse = await functions[currentCall.name](currentCall.args);
+
+            history.push({ role: "model", parts: result.response.candidates[0].content.parts });
+            history.push({
+                role: "user",
+                parts: [{ functionResponse: { name: currentCall.name, response: { data: apiResponse } } }]
+            });
+
+            console.log(`>>> [Worker] Sending tool results back to Gemini...`);
+            result = await model.generateContent({ contents: history });
+            call = result.response.functionCalls();
         }
-    ];
 
-    let result = await model.generateContent({ contents: history });
-    let call = result.response.functionCalls();
+        const finalOutput = result.response.text();
+        console.log(`\n>>> [AI Buyer Mission Completed]:\n${finalOutput}\n`);
 
-    // Execution Loop
-    while (call && call.length > 0) {
-        const currentCall = call[0];
-        const apiResponse = await functions[currentCall.name](currentCall.args);
-
-        // 2. Push the model's function request into history
-        history.push({
-            role: "model",
-            parts: result.response.candidates[0].content.parts
-        });
-
-        // 3. Push your Spring Boot API response into history, explicitly forcing the role to "user"
-        history.push({
-            role: "user",
-            parts: [{
-                functionResponse: {
-                    name: currentCall.name,
-                    response: { data: apiResponse }
-                }
-            }]
-        });
-
-        // 4. Send the updated history back to Gemini
-        result = await model.generateContent({ contents: history });
-        call = result.response.functionCalls();
+        return finalOutput;
+    } catch (error) {
+        console.error(`\nXXX [GOOGLE API ERROR] XXX\n`, error);
+        throw error;
     }
+}, {
+    connection: redisConnection,
+    limiter: { max: 1, duration: 15000 },
+    // it Automatically retries up to 3 times if Google returns a 503 error
+    settings: {
+        backoffStrategy: (attemptsMade) => Math.min(attemptsMade * 5000, 20000)
+    }});
 
-    console.log("\n>>> [AI Buyer Mission Completed]:\n", result.response.text());
-}
+// The API endpoint for the Frontend
+// Quickly adds the mission to the queue and returns a Job ID
+app.post('/api/run-agent', async (req, res) => {
+    try {
+        const job = await agentQueue.add('buy-mission', req.body);
+        res.json({ success: true, jobId: job.id, message: "Mission queued successfully." });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
 
-runAgentDemo();
+app.get('/api/job/:id', async (req, res) => {
+    try {
+        const job = await agentQueue.getJob(req.params.id);
+        if (!job) return res.status(404).json({ error: "Job not found" });
+
+        const state = await job.getState();
+        const result = job.returnvalue;
+
+        res.json({ state, result });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.listen(3001, () => {
+    console.log(">>> AI Agent Queue Server running on http://localhost:3001");
+});

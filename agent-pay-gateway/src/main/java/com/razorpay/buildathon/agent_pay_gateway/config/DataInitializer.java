@@ -31,6 +31,30 @@ public class DataInitializer {
                                 .price(new BigDecimal("1200.00"))
                                 .stock(50)
                                 .agentMetadata("{\"discountable\": true}")
+                                .build(),
+                        Product.builder()
+                                .sku("PH-202")
+                                .name("Smartphone Pro 5G")
+                                .category("Smartphones")
+                                .price(new BigDecimal("35000.00"))
+                                .stock(25)
+                                .agentMetadata("{\"bundle_eligible\": true}")
+                                .build(),
+                        Product.builder()
+                                .sku("MN-404")
+                                .name("UltraWide 34-inch Monitor")
+                                .category("Monitors")
+                                .price(new BigDecimal("32000.00"))
+                                .stock(15)
+                                .agentMetadata("{\"upsell_target\": \"KB-606\"}")
+                                .build(),
+                        Product.builder()
+                                .sku("KB-606")
+                                .name("Mechanical Coding Keyboard")
+                                .category("Accessories")
+                                .price(new BigDecimal("4500.00"))
+                                .stock(30)
+                                .agentMetadata("{\"discountable\": false}")
                                 .build()
                 ));
                 System.out.println(">>> Sample Agent Catalog Data Seeded! <<<");
