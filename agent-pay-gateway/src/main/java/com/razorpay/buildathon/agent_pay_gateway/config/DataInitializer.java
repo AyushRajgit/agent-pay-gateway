@@ -21,7 +21,7 @@ public class DataInitializer {
                                 .name("Pro Developer Laptop 16-inch")
                                 .category("Laptops")
                                 .price(new BigDecimal("45000.00"))
-                                .stock(10)
+                                .stock(1)
                                 .agentMetadata("{\"upsell_target\": \"ACC-09\"}")
                                 .build(),
                         Product.builder()
