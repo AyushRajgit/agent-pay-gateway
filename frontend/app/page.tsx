@@ -158,11 +158,24 @@ export default function AgentDashboard() {
                         </div>
 
                         {result && (
-                            <div className="mt-4 bg-slate-950 border border-slate-800 rounded-lg p-4">
-                                <h3 className="text-sm font-semibold text-indigo-400 mb-2">Agent Mission Output:</h3>
-                                <pre className="whitespace-pre-wrap text-sm text-slate-300 font-mono bg-transparent">
-                  {result}
-                </pre>
+                            <div className="mt-4 bg-slate-950 border border-slate-800 rounded-lg p-4 font-mono text-sm">
+                                <h3 className="text-emerald-400 border-b border-slate-800 pb-2 mb-2">✅ XAI Audit Trail</h3>
+                                {(() => {
+                                    try {
+                                        const audit = JSON.parse(result);
+                                        return (
+                                            <ul className="space-y-2 text-slate-300">
+                                                <li><span className="text-slate-500">Decision:</span> {audit.status}</li>
+                                                <li><span className="text-slate-500">Evaluated:</span> {audit.items_evaluated.join(", ")}</li>
+                                                <li><span className="text-slate-500">Financials:</span> ₹{audit.total_cost} / ₹{audit.mandate_limit} Limit</li>
+                                                <li className="mt-2 text-indigo-300">"{audit.reasoning_log}"</li>
+                                            </ul>
+                                        );
+                                    } catch {
+                                        // Fallback if the AI just returns plain text
+                                        return <span>{result}</span>;
+                                    }
+                                })()}
                             </div>
                         )}
                     </div>
