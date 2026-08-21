@@ -75,6 +75,18 @@ const tools = [{
                 },
                 required: ["agentId", "skuList", "mandateLimit"]
             }
+        },
+        {
+            name: "request_mandate_override",
+            description: "Use this ONLY if the total cart value is slightly over the mandate limit (within 10%). Asks the human supervisor for approval.",
+            parameters: {
+                type: "OBJECT",
+                properties: {
+                    excessAmount: { type: "NUMBER" },
+                    reason: { type: "STRING" }
+                },
+                required: ["excessAmount", "reason"]
+            }
         }
     ]
 }];
@@ -93,7 +105,19 @@ const worker = new Worker('agent-missions', async (job) => {
             model: "gemini-flash-latest",
             tools: tools
         });
-        const systemPrompt = `You are an autonomous corporate buyer with a strict spending mandate limit of ₹${mandateLimit}. Use agentId: '${agentId}'. User Request: "${userPrompt}". Browse the catalog, find the requested items, evaluate upsells, and execute the gated checkout.`;
+
+        const systemPrompt = `You are an autonomous corporate buyer with a strict spending mandate limit of ₹${mandateLimit}. 
+Use agentId: '${agentId}'. User Request: "${userPrompt}". 
+Browse the catalog, evaluate upsells, and execute the checkout.
+
+CRITICAL INSTRUCTION: Your final output MUST be a valid JSON object strictly following this format:
+{
+  "status": "SUCCESS or FAILED",
+  "items_evaluated": ["list", "of", "skus"],
+  "total_cost": 45000,
+  "mandate_limit": ${mandateLimit},
+  "reasoning_log": "A detailed 2-sentence explanation of why these items were chosen and how they fit the budget."
+}`;
 
         let history = [{ role: "user", parts: [{ text: systemPrompt }] }];
 
