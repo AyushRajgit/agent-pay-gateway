@@ -13,19 +13,21 @@ export default function AgentDashboard() {
     const [result, setResult] = useState<string | null>(null);
     const [loading, setLoading] = useState(false);
 
-    const handleRunAgent = async (e: React.FormEvent) => {
-        e.preventDefault();
+    const handleRunAgent = async (e?: React.FormEvent, overrideLimit?: number) => {
+        if (e) e.preventDefault();
         setLoading(true);
         setJobId(null);
         setJobState("queued");
         setWorkerId(null);
         setResult(null);
 
+        const currentLimit = overrideLimit || mandateLimit;
+
         try {
             const res = await fetch("http://localhost:3001/api/run-agent", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ agentId, mandateLimit, userPrompt }),
+                body: JSON.stringify({ agentId, mandateLimit: currentLimit, userPrompt }),
             });
             const data = await res.json();
 
@@ -156,24 +158,62 @@ export default function AgentDashboard() {
                         </div>
 
                         {result && (
-                            <div className="mt-4 bg-slate-950 border border-slate-800 rounded-lg p-4 font-mono text-sm">
-                                <h3 className="text-emerald-400 border-b border-slate-800 pb-2 mb-2">✅ XAI Audit Trail</h3>
+                            <>
+                                {/* HITL Buttons, Only show if APPROVAL_REQUIRED */}
                                 {(() => {
                                     try {
                                         const audit = JSON.parse(result);
-                                        return (
-                                            <ul className="space-y-2 text-slate-300">
-                                                <li><span className="text-slate-500">Decision:</span> {audit.status}</li>
-                                                <li><span className="text-slate-500">Evaluated:</span> {audit.items_evaluated.join(", ")}</li>
-                                                <li><span className="text-slate-500">Financials:</span> ₹{audit.total_cost} / ₹{audit.mandate_limit} Limit</li>
-                                                <li className="mt-2 text-indigo-300">"{audit.reasoning_log}"</li>
-                                            </ul>
-                                        );
-                                    } catch {
-                                        return <span>{result}</span>;
-                                    }
+                                        if (audit.status === "APPROVAL_REQUIRED") {
+                                            return (
+                                                <div className="mt-4 bg-amber-950/40 border border-amber-500/50 rounded-lg p-4 space-y-3">
+                                                    <div className="flex items-center gap-2 text-amber-400 font-bold">
+                                                        <span>⚠️ HITL Mandate Override Requested</span>
+                                                    </div>
+                                                    <p className="text-sm text-slate-300">{audit.reasoning_log}</p>
+                                                    <div className="flex gap-3 pt-2">
+                                                        <button
+                                                            onClick={() => handleRunAgent(undefined, audit.total_cost)}
+                                                            className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold px-4 py-2 rounded text-xs transition-colors cursor-pointer"
+                                                        >
+                                                            Approve Budget Override (₹{audit.total_cost})
+                                                        </button>
+                                                        <button
+                                                            onClick={() => {
+                                                                setJobState("failed");
+                                                                setResult(JSON.stringify({ ...audit, status: "REJECTED_BY_ADMIN", reasoning_log: "Manager rejected the budget override." }));
+                                                            }}
+                                                            className="bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold px-4 py-2 rounded text-xs transition-colors cursor-pointer"
+                                                        >
+                                                            Reject
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            );
+                                        }
+                                    } catch {}
+                                    return null;
                                 })()}
-                            </div>
+
+                                {/* XAI Audit Trail List */}
+                                <div className="mt-4 bg-slate-950 border border-slate-800 rounded-lg p-4 font-mono text-sm">
+                                    <h3 className="text-emerald-400 border-b border-slate-800 pb-2 mb-2">✅ XAI Audit Trail</h3>
+                                    {(() => {
+                                        try {
+                                            const audit = JSON.parse(result);
+                                            return (
+                                                <ul className="space-y-2 text-slate-300">
+                                                    <li><span className="text-slate-500">Decision:</span> {audit.status}</li>
+                                                    <li><span className="text-slate-500">Evaluated:</span> {audit.items_evaluated ? audit.items_evaluated.join(", ") : "None"}</li>
+                                                    <li><span className="text-slate-500">Financials:</span> ₹{audit.total_cost} / ₹{audit.mandate_limit} Limit</li>
+                                                    <li className="mt-2 text-indigo-300">"{audit.reasoning_log}"</li>
+                                                </ul>
+                                            );
+                                        } catch {
+                                            return <span className="whitespace-pre-wrap">{result}</span>;
+                                        }
+                                    })()}
+                                </div>
+                            </>
                         )}
                     </div>
                 )}

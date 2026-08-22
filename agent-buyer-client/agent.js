@@ -82,7 +82,7 @@ const tools = [{
         },
         {
             name: "request_mandate_override",
-            description: "Use this ONLY if the total cart value is slightly over the mandate limit (within 10%). Asks the human supervisor for approval.",
+            description: "Use this ONLY if the total cart value is over the mandate limit, BUT strictly within a 10% range. Do NOT use if excess is higher.",
             parameters: {
                 type: "OBJECT",
                 properties: {
@@ -104,22 +104,30 @@ const worker = new Worker('agent-missions', async (job) => {
     console.log(`======================================================`);
 
     try {
-        // Here, I used google-gemini-API
+        // Corrected Model Version
         const model = genAI.getGenerativeModel({
-            model: "gemini-flash-latest",
+            model: "gemini-3.5-flash",
             tools: tools
         });
 
-        const systemPrompt = `You are an autonomous corporate buyer with a strict spending mandate limit of ₹${mandateLimit}. 
+        // Pre-calculate the hard 10% cutoff limit for the AI
+        const hardCutoffLimit = mandateLimit * 1.1;
+
+        const systemPrompt = `You are an autonomous corporate buyer with a strict spending mandate limit of ₹${mandateLimit}.
         Use agentId: '${agentId}'. User Request: "${userPrompt}". Browse the catalog, evaluate upsells, and execute the checkout.
+
+        CRITICAL BUDGET ENFORCEMENT RULES:
+        1. If Total Cost <= ₹${mandateLimit} : Call execute_checkout. Return status "SUCCESS".
+        2. If Total Cost > ₹${mandateLimit} BUT is <= ₹${hardCutoffLimit} (within 10% buffer) : Call request_mandate_override. Return status "APPROVAL_REQUIRED".
+        3. If Total Cost > ₹${hardCutoffLimit} (exceeds 10% buffer) : DO NOT call execute_checkout. DO NOT call request_mandate_override. Return status "FAILED".
 
         CRITICAL INSTRUCTION: Your final output MUST be a valid JSON object strictly following this format:
         {
-           "status": "SUCCESS or FAILED",
+           "status": "SUCCESS, FAILED, or APPROVAL_REQUIRED",
            "items_evaluated": ["list", "of", "skus"],
            "total_cost": 45000,
            "mandate_limit": ${mandateLimit},
-           "reasoning_log": "A detailed 2-sentence explanation of why these items were chosen and how they fit the budget."
+           "reasoning_log": "A detailed 2-sentence explanation of why these items were chosen and how they fit the budget constraints."
         }`;
 
         let history = [{ role: "user", parts: [{ text: systemPrompt }] }];
@@ -160,7 +168,6 @@ const worker = new Worker('agent-missions', async (job) => {
     }});
 
 // The API endpoint for the Frontend
-// Quickly adds the mission to the queue and returns a Job ID
 app.post('/api/run-agent', async (req, res) => {
     try {
         const job = await agentQueue.add('buy-mission', req.body);
@@ -187,3 +194,158 @@ app.get('/api/job/:id', async (req, res) => {
 app.listen(3001, () => {
     console.log(">>> AI Agent Queue Server running on http://localhost:3001");
 });
+
+// Testing Code, When Gemini API is busy
+
+/*
+import express from 'express';
+import cors from 'cors';
+import fetch from "node-fetch";
+import dotenv from "dotenv";
+import { Queue, Worker } from 'bullmq';
+import Redis from 'ioredis';
+
+dotenv.config();
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+// Set up Redis connection
+const redisConnection = new Redis({ host: '127.0.0.1', port: 6379, maxRetriesPerRequest: null });
+
+// Initialize BullMQ Queue
+const agentQueue = new Queue('agent-missions', { connection: redisConnection });
+const BASE_URL = "http://localhost:8080/api/agent";
+
+// Deterministic HITL Worker
+const worker = new Worker('agent-missions', async (job) => {
+    const { userPrompt, mandateLimit, agentId } = job.data;
+
+    console.log(`\n======================================================`);
+    console.log(`>>> [Worker] Processing Job ${job.id}: Agent ${agentId} with budget ₹${mandateLimit}`);
+    console.log(`======================================================`);
+
+    // Simulated Gemini Handshake & Catalog Query
+    console.log(`>>> [Worker] Sending request to Google Gemini API (gemini-1.5-flash)...`);
+    await new Promise((r) => setTimeout(r, 600));
+
+    console.log(`\n>>> [AI Agent] Fetching store catalog...`);
+    try {
+        const catalogRes = await fetch(`${BASE_URL}/catalog`);
+        await catalogRes.json();
+    } catch {
+        console.log(`>>> [Catalog API] Using fallback catalog metadata.`);
+    }
+    await new Promise((r) => setTimeout(r, 600));
+
+    console.log(`\n>>> [AI Agent] Evaluating upsell for SKU: LP-101 with budget: ₹${mandateLimit}...`);
+    await new Promise((r) => setTimeout(r, 800));
+
+    const totalCartCost = 46200;
+
+    // SCENARIO 1: Mandate Limit is below cart cost -> Trigger HITL Escalation
+    if (mandateLimit < totalCartCost) {
+        const excess = totalCartCost - mandateLimit;
+        console.log(`\n>>> [HITL ALERT] AI requested override for ₹${excess}. Reason: Developer laptop (LP-101) and ergonomic mouse (ACC-09) exceed the ₹${mandateLimit} mandate limit.`);
+
+        const hitlPayload = JSON.stringify({
+            status: "APPROVAL_REQUIRED",
+            transaction_id: null,
+            mandate_limit: mandateLimit,
+            total_cost: totalCartCost,
+            budget_variance: excess,
+            policy_compliance: "ESCALATED_FOR_APPROVAL",
+            items_evaluated: ["LP-101", "ACC-09"],
+            item_details: [
+                { sku: "LP-101", title: "Pro Developer Laptop 16-inch", price: 45000, category: "Laptops" },
+                { sku: "ACC-09", title: "Ergonomic Wireless Mouse", price: 1200, category: "Accessories" }
+            ],
+            execution_steps: [
+                "Queried catalog and identified Pro Developer Laptop 16-inch (LP-101).",
+                "Evaluated Ergonomic Wireless Mouse (ACC-09) as target upsell accessory.",
+                `Computed total cost as ₹${totalCartCost}, exceeding mandate limit of ₹${mandateLimit}.`,
+                "Escalated transaction to human supervisor for budget override authorization."
+            ],
+            reasoning_log: `HITL Override requested for ₹${excess}: Developer laptop (LP-101) and ergonomic mouse (ACC-09) exceed the ₹${mandateLimit} mandate limit.`
+        });
+
+        console.log(`\n>>> [AI Buyer Mission Paused for HITL]:\n${hitlPayload}\n`);
+        return hitlPayload;
+    }
+
+    // SCENARIO 2: Mandate Limit is Approved (₹46,200) -> Lock Escrow and Complete Checkout
+    console.log(`\n>>> [AI Agent] Requesting gated checkout for items: LP-101, ACC-09...`);
+    let orderId = "pay_RZP_ABC123XYZ";
+
+    try {
+        const checkoutRes = await fetch(`${BASE_URL}/checkout`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ agentId, skuList: ["LP-101", "ACC-09"], agentBudgetMandate: mandateLimit }),
+        });
+        const checkoutData = await checkoutRes.json();
+        if (checkoutData.orderId) {
+            orderId = checkoutData.orderId;
+        }
+    } catch {
+        console.log(`>>> [Checkout API] Generated mock Razorpay order reference.`);
+    }
+
+    await new Promise((r) => setTimeout(r, 800));
+
+    const successPayload = JSON.stringify({
+        status: "SUCCESS",
+        transaction_id: orderId,
+        mandate_limit: mandateLimit,
+        total_cost: totalCartCost,
+        budget_variance: 0,
+        policy_compliance: "PASSED",
+        items_evaluated: ["LP-101", "ACC-09"],
+        item_details: [
+            { sku: "LP-101", title: "Pro Developer Laptop 16-inch", price: 45000, category: "Laptops" },
+            { sku: "ACC-09", title: "Ergonomic Wireless Mouse", price: 1200, category: "Accessories" }
+        ],
+        execution_steps: [
+            "Queried catalog and verified pricing for requested laptop.",
+            "Evaluated and included relevant upsell accessory.",
+            `Verified total cart value (₹${totalCartCost}) was within the approved mandate limit.`,
+            "Executed secure Razorpay checkout to lock escrow."
+        ],
+        reasoning_log: "Procurement executed successfully. The cart total exactly matched the recently approved HITL mandate limit, allowing the autonomous escrow lock via Razorpay."
+    });
+
+    console.log(`\n>>> [AI Buyer Mission Completed]:\n${successPayload}\n`);
+    return successPayload;
+}, {
+    connection: redisConnection
+});
+
+// API Endpoints
+app.post('/api/run-agent', async (req, res) => {
+    try {
+        const job = await agentQueue.add('buy-mission', req.body);
+        res.json({ success: true, jobId: job.id, message: "Mission queued successfully." });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+app.get('/api/job/:id', async (req, res) => {
+    try {
+        const job = await agentQueue.getJob(req.params.id);
+        if (!job) return res.status(404).json({ error: "Job not found" });
+
+        const state = await job.getState();
+        const result = job.returnvalue;
+
+        res.json({ state, result });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.listen(3001, () => {
+    console.log(">>> AI Agent Queue Server running on http://localhost:3001");
+});
+ */
